@@ -23,10 +23,16 @@ before each LLM call to deliver results.
                  +-- notification queue --> [results injected]
 
 Key insight: "Fire and forget -- the agent doesn't block while the command runs."
+
+Usage:
+    python s08_background_tasks.py        # normal mode
+    python s08_background_tasks.py -v     # verbose mode (print API calls)
 """
 
+import argparse
 import os
 import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -35,6 +41,16 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
+
+# 添加 agents 目录到 path，支持从项目根目录运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verbose_callback import VerboseCallbackHandler
+
+# 解析命令行参数
+parser = argparse.ArgumentParser(description="Background Tasks with optional verbose logging")
+parser.add_argument("-v", "--verbose", action="store_true", help="Print API request/response")
+args = parser.parse_args()
+VERBOSE = args.verbose
 
 load_dotenv(override=True)
 
@@ -181,8 +197,11 @@ TOOLS = [bash, read_file, write_file, edit_file, background_run, check_backgroun
 TOOL_DISPATCH = {t.name: t for t in TOOLS}
 
 
-def agent_loop(messages: list):
+def agent_loop(messages: list, verbose_handler: VerboseCallbackHandler | None = None):
+    """Agent 循环：支持后台任务"""
     llm_with_tools = llm.bind_tools(TOOLS)
+    config = {"callbacks": [verbose_handler]} if verbose_handler else None
+
     while True:
         # Drain background notifications and inject as system message before LLM call
         notifs = BG.drain_notifications()
@@ -190,7 +209,7 @@ def agent_loop(messages: list):
             notif_text = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
             messages.append(HumanMessage(content=f"<background-results>\n{notif_text}\n</background-results>"))
             messages.append(AIMessage(content="Noted background results."))
-        response = llm_with_tools.invoke(messages)
+        response = llm_with_tools.invoke(messages, config=config)
         messages.append(response)
         if not response.tool_calls:
             return
@@ -200,7 +219,9 @@ def agent_loop(messages: list):
                 output = handler.invoke(tool_call["args"]) if handler else f"Unknown tool: {tool_call['name']}"
             except Exception as e:
                 output = f"Error: {e}"
-            print(f"> {tool_call['name']}: {str(output)[:200]}")
+            # 非 verbose 模式下打印截断输出
+            if not verbose_handler:
+                print(f"> {tool_call['name']}: {str(output)[:200]}")
             messages.append(ToolMessage(
                 content=str(output),
                 tool_call_id=tool_call["id"],
@@ -208,6 +229,9 @@ def agent_loop(messages: list):
 
 
 if __name__ == "__main__":
+    # 创建 verbose handler（如果启用）
+    verbose_handler = VerboseCallbackHandler() if VERBOSE else None
+
     history = [SystemMessage(content=SYSTEM)]
     while True:
         try:
@@ -217,7 +241,7 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
         history.append(HumanMessage(content=query))
-        agent_loop(history)
+        agent_loop(history, verbose_handler)
         last_msg = history[-1]
         if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
             print(last_msg.content)

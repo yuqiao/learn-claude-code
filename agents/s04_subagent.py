@@ -21,16 +21,32 @@ context, sharing the filesystem, then returns only a summary to the parent.
     Subagent context is discarded.
 
 Key insight: "Process isolation gives context isolation for free."
+
+Usage:
+    python s04_subagent.py        # normal mode
+    python s04_subagent.py -v     # verbose mode (print API calls)
 """
 
+import argparse
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+# 添加 agents 目录到 path，支持从项目根目录运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verbose_callback import VerboseCallbackHandler
+
+# 解析命令行参数
+parser = argparse.ArgumentParser(description="Subagents with optional verbose logging")
+parser.add_argument("-v", "--verbose", action="store_true", help="Print API request/response")
+args = parser.parse_args()
+VERBOSE = args.verbose
 
 load_dotenv(override=True)
 
@@ -141,20 +157,26 @@ PARENT_TOOLS = CHILD_TOOLS + [task]
 PARENT_TOOL_DISPATCH = {t.name: t for t in PARENT_TOOLS}
 
 
-def agent_loop(messages: list):
+def agent_loop(messages: list, verbose_handler: VerboseCallbackHandler | None = None):
+    """Agent 循环：支持 subagent 委派"""
     llm_with_tools = llm.bind_tools(PARENT_TOOLS)
+    config = {"callbacks": [verbose_handler]} if verbose_handler else None
+
     while True:
-        response = llm_with_tools.invoke(messages)
+        response = llm_with_tools.invoke(messages, config=config)
         messages.append(response)
         if not response.tool_calls:
             return
         for tool_call in response.tool_calls:
             handler = PARENT_TOOL_DISPATCH.get(tool_call["name"])
-            if tool_call["name"] == "task":
-                desc = tool_call["args"].get("description", "subtask")
-                print(f"> task ({desc}): {tool_call['args']['prompt'][:80]}")
+            # 非 verbose 模式下打印信息
+            if not verbose_handler:
+                if tool_call["name"] == "task":
+                    desc = tool_call["args"].get("description", "subtask")
+                    print(f"> task ({desc}): {tool_call['args']['prompt'][:80]}")
             output = handler.invoke(tool_call["args"]) if handler else f"Unknown tool: {tool_call['name']}"
-            print(f"  {str(output)[:200]}")
+            if not verbose_handler:
+                print(f"  {str(output)[:200]}")
             messages.append(ToolMessage(
                 content=str(output),
                 tool_call_id=tool_call["id"],
@@ -162,6 +184,9 @@ def agent_loop(messages: list):
 
 
 if __name__ == "__main__":
+    # 创建 verbose handler（如果启用）
+    verbose_handler = VerboseCallbackHandler() if VERBOSE else None
+
     history = [SystemMessage(content=SYSTEM)]
     while True:
         try:
@@ -171,7 +196,7 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
         history.append(HumanMessage(content=query))
-        agent_loop(history)
+        agent_loop(history, verbose_handler)
         last_msg = history[-1]
         if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
             print(last_msg.content)

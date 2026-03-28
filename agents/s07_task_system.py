@@ -20,17 +20,33 @@ Each task has a dependency graph (blockedBy/blocks).
          +--- completing task 1 removes it from task 2's blockedBy
 
 Key insight: "State that survives compression -- because it's outside the conversation."
+
+Usage:
+    python s07_task_system.py        # normal mode
+    python s07_task_system.py -v     # verbose mode (print API calls)
 """
 
+import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+# 添加 agents 目录到 path，支持从项目根目录运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verbose_callback import VerboseCallbackHandler
+
+# 解析命令行参数
+parser = argparse.ArgumentParser(description="Task System with optional verbose logging")
+parser.add_argument("-v", "--verbose", action="store_true", help="Print API request/response")
+args = parser.parse_args()
+VERBOSE = args.verbose
 
 load_dotenv(override=True)
 
@@ -214,10 +230,13 @@ TOOLS = [bash, read_file, write_file, edit_file, task_create, task_update, task_
 TOOL_DISPATCH = {t.name: t for t in TOOLS}
 
 
-def agent_loop(messages: list):
+def agent_loop(messages: list, verbose_handler: VerboseCallbackHandler | None = None):
+    """Agent 循环：支持持久化任务系统"""
     llm_with_tools = llm.bind_tools(TOOLS)
+    config = {"callbacks": [verbose_handler]} if verbose_handler else None
+
     while True:
-        response = llm_with_tools.invoke(messages)
+        response = llm_with_tools.invoke(messages, config=config)
         messages.append(response)
         if not response.tool_calls:
             return
@@ -227,7 +246,9 @@ def agent_loop(messages: list):
                 output = handler.invoke(tool_call["args"]) if handler else f"Unknown tool: {tool_call['name']}"
             except Exception as e:
                 output = f"Error: {e}"
-            print(f"> {tool_call['name']}: {str(output)[:200]}")
+            # 非 verbose 模式下打印截断输出
+            if not verbose_handler:
+                print(f"> {tool_call['name']}: {str(output)[:200]}")
             messages.append(ToolMessage(
                 content=str(output),
                 tool_call_id=tool_call["id"],
@@ -235,6 +256,9 @@ def agent_loop(messages: list):
 
 
 if __name__ == "__main__":
+    # 创建 verbose handler（如果启用）
+    verbose_handler = VerboseCallbackHandler() if VERBOSE else None
+
     history = [SystemMessage(content=SYSTEM)]
     while True:
         try:
@@ -244,7 +268,7 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
         history.append(HumanMessage(content=query))
-        agent_loop(history)
+        agent_loop(history, verbose_handler)
         last_msg = history[-1]
         if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
             print(last_msg.content)
