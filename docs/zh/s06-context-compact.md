@@ -50,42 +50,49 @@ continue    [Layer 2: auto_compact]
 def micro_compact(messages: list) -> list:
     tool_results = []
     for i, msg in enumerate(messages):
-        if msg["role"] == "user" and isinstance(msg.get("content"), list):
-            for j, part in enumerate(msg["content"]):
-                if isinstance(part, dict) and part.get("type") == "tool_result":
-                    tool_results.append((i, j, part))
+        if isinstance(msg, ToolMessage):
+            tool_results.append((i, msg))
     if len(tool_results) <= KEEP_RECENT:
         return messages
-    for _, _, part in tool_results[:-KEEP_RECENT]:
-        if len(part.get("content", "")) > 100:
-            part["content"] = f"[Previous: used {tool_name}]"
+    for _, msg in tool_results[:-KEEP_RECENT]:
+        if len(msg.content) > 100:
+            msg.content = f"[Previous: used {msg.name}]"
     return messages
 ```
 
 2. **第二层 -- auto_compact**: token 超过阈值时, 保存完整对话到磁盘, 让 LLM 做摘要。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 def auto_compact(messages: list) -> list:
     # Save transcript for recovery
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
     with open(transcript_path, "w") as f:
         for msg in messages:
-            f.write(json.dumps(msg, default=str) + "\n")
+            f.write(json.dumps(msg.dict(), default=str) + "\n")
     # LLM summarizes
-    response = client.messages.create(
-        model=MODEL,
-        messages=[{"role": "user", "content":
+    response = llm.invoke([
+        HumanMessage(content=
             "Summarize this conversation for continuity..."
-            + json.dumps(messages, default=str)[:80000]}],
-        max_tokens=2000,
-    )
+            + json.dumps([m.dict() for m in messages], default=str)[:80000])
+    ])
     return [
-        {"role": "user", "content": f"[Compressed]\n\n{response.content[0].text}"},
-        {"role": "assistant", "content": "Understood. Continuing."},
+        HumanMessage(content=f"[Compressed]\n\n{response.content}"),
+        AIMessage(content="Understood. Continuing."),
     ]
 ```
 
-3. **第三层 -- manual compact**: `compact` 工具按需触发同样的摘要机制。
+3. **第三层 -- manual compact**: 使用 `@tool` 装饰器定义 `compact` 工具按需触发同样的摘要机制。
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def compact() -> str:
+    """Manually trigger context compression."""
+    return "Compression triggered."
+```
 
 4. 循环整合三层:
 
@@ -95,7 +102,7 @@ def agent_loop(messages: list):
         micro_compact(messages)                        # Layer 1
         if estimate_tokens(messages) > THRESHOLD:
             messages[:] = auto_compact(messages)       # Layer 2
-        response = client.messages.create(...)
+        response = llm.invoke(messages, tools=TOOLS)
         # ... tool execution ...
         if manual_compact:
             messages[:] = auto_compact(messages)       # Layer 3

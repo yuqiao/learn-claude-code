@@ -20,7 +20,7 @@
                     ^                |
                     |   tool_result  |
                     +----------------+
-                    (loop until stop_reason != "tool_use")
+                    (loop until no tool_calls)
 ```
 
 一个退出条件控制整个流程。循环持续运行, 直到模型不再调用工具。
@@ -30,66 +30,66 @@
 1. 用户 prompt 作为第一条消息。
 
 ```python
-messages.append({"role": "user", "content": query})
+from langchain_core.messages import HumanMessage
+messages.append(HumanMessage(content=query))
 ```
 
 2. 将消息和工具定义一起发给 LLM。
 
 ```python
-response = client.messages.create(
-    model=MODEL, system=SYSTEM, messages=messages,
-    tools=TOOLS, max_tokens=8000,
-)
+llm_with_tools = llm.bind_tools([bash])
+response = llm_with_tools.invoke(messages)
 ```
 
-3. 追加助手响应。检查 `stop_reason` -- 如果模型没有调用工具, 结束。
+3. 追加助手响应。检查是否有工具调用 -- 如果没有, 结束。
 
 ```python
-messages.append({"role": "assistant", "content": response.content})
-if response.stop_reason != "tool_use":
+messages.append(response)
+if not response.tool_calls:
     return
 ```
 
-4. 执行每个工具调用, 收集结果, 作为 user 消息追加。回到第 2 步。
+4. 执行每个工具调用, 收集结果, 作为 ToolMessage 追加。回到第 2 步。
 
 ```python
-results = []
-for block in response.content:
-    if block.type == "tool_use":
-        output = run_bash(block.input["command"])
-        results.append({
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": output,
-        })
-messages.append({"role": "user", "content": results})
+from langchain_core.messages import ToolMessage
+for tool_call in response.tool_calls:
+    output = bash.invoke(tool_call["args"])
+    messages.append(ToolMessage(
+        content=output,
+        tool_call_id=tool_call["id"],
+    ))
 ```
 
 组装为一个完整函数:
 
 ```python
-def agent_loop(query):
-    messages = [{"role": "user", "content": query}]
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, ToolMessage
 
-        if response.stop_reason != "tool_use":
+@tool
+def bash(command: str) -> str:
+    """Run a shell command."""
+    # ... 实现 ...
+
+llm = ChatOpenAI(model=MODEL, base_url=BASE_URL)
+llm_with_tools = llm.bind_tools([bash])
+
+def agent_loop(messages: list):
+    while True:
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
             return
 
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                output = run_bash(block.input["command"])
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": output,
-                })
-        messages.append({"role": "user", "content": results})
+        for tool_call in response.tool_calls:
+            output = bash.invoke(tool_call["args"])
+            messages.append(ToolMessage(
+                content=output,
+                tool_call_id=tool_call["id"],
+            ))
 ```
 
 不到 30 行, 这就是整个智能体。后面 11 个章节都在这个循环上叠加机制 -- 循环本身始终不变。
@@ -98,10 +98,10 @@ def agent_loop(query):
 
 | 组件          | 之前       | 之后                           |
 |---------------|------------|--------------------------------|
-| Agent loop    | (无)       | `while True` + stop_reason     |
-| Tools         | (无)       | `bash` (单一工具)              |
-| Messages      | (无)       | 累积式消息列表                 |
-| Control flow  | (无)       | `stop_reason != "tool_use"`    |
+| Agent loop    | (无)       | `while True` + `tool_calls`    |
+| Tools         | (无)       | `@tool bash` (单一工具)        |
+| Messages      | (无)       | LangChain Message 类型         |
+| Control flow  | (无)       | `not response.tool_calls`      |
 
 ## 试一试
 

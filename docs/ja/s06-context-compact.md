@@ -47,24 +47,28 @@ continue    [Layer 2: auto_compact]
 1. **第1層 -- micro_compact**: 各LLM呼び出しの前に、古いツール結果をプレースホルダーに置換する。
 
 ```python
+from langchain_core.messages import HumanMessage, ToolMessage
+
 def micro_compact(messages: list) -> list:
     tool_results = []
     for i, msg in enumerate(messages):
-        if msg["role"] == "user" and isinstance(msg.get("content"), list):
-            for j, part in enumerate(msg["content"]):
-                if isinstance(part, dict) and part.get("type") == "tool_result":
+        if isinstance(msg, HumanMessage) and isinstance(msg.content, list):
+            for j, part in enumerate(msg.content):
+                if isinstance(part, ToolMessage):
                     tool_results.append((i, j, part))
     if len(tool_results) <= KEEP_RECENT:
         return messages
     for _, _, part in tool_results[:-KEEP_RECENT]:
-        if len(part.get("content", "")) > 100:
-            part["content"] = f"[Previous: used {tool_name}]"
+        if len(part.content) > 100:
+            part.content = f"[Previous: used {tool_name}]"
     return messages
 ```
 
 2. **第2層 -- auto_compact**: トークンが閾値を超えたら、完全なトランスクリプトをディスクに保存し、LLMに要約を依頼する。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 def auto_compact(messages: list) -> list:
     # Save transcript for recovery
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
@@ -72,16 +76,14 @@ def auto_compact(messages: list) -> list:
         for msg in messages:
             f.write(json.dumps(msg, default=str) + "\n")
     # LLM summarizes
-    response = client.messages.create(
-        model=MODEL,
-        messages=[{"role": "user", "content":
+    response = llm.invoke([
+        HumanMessage(content=
             "Summarize this conversation for continuity..."
-            + json.dumps(messages, default=str)[:80000]}],
-        max_tokens=2000,
-    )
+            + json.dumps(messages, default=str)[:80000])
+    ])
     return [
-        {"role": "user", "content": f"[Compressed]\n\n{response.content[0].text}"},
-        {"role": "assistant", "content": "Understood. Continuing."},
+        HumanMessage(content=f"[Compressed]\n\n{response.content}"),
+        AIMessage(content="Understood. Continuing."),
     ]
 ```
 
@@ -95,7 +97,7 @@ def agent_loop(messages: list):
         micro_compact(messages)                        # Layer 1
         if estimate_tokens(messages) > THRESHOLD:
             messages[:] = auto_compact(messages)       # Layer 2
-        response = client.messages.create(...)
+        response = llm.invoke(messages)
         # ... tool execution ...
         if manual_compact:
             messages[:] = auto_compact(messages)       # Layer 3

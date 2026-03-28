@@ -72,18 +72,19 @@ def _execute(self, task_id, command):
 4. エージェントループが各LLM呼び出しの前に通知をドレインする。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 def agent_loop(messages: list):
     while True:
         notifs = BG.drain_notifications()
         if notifs:
             notif_text = "\n".join(
                 f"[bg:{n['task_id']}] {n['result']}" for n in notifs)
-            messages.append({"role": "user",
-                "content": f"<background-results>\n{notif_text}\n"
-                           f"</background-results>"})
-            messages.append({"role": "assistant",
-                "content": "Noted background results."})
-        response = client.messages.create(...)
+            messages.append(HumanMessage(
+                content=f"<background-results>\n{notif_text}\n"
+                       f"</background-results>"))
+            messages.append(AIMessage(content="Noted background results."))
+        response = llm.invoke(messages)
 ```
 
 ループはシングルスレッドのまま。サブプロセスI/Oだけが並列化される。

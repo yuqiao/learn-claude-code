@@ -90,16 +90,31 @@ def update(self, task_id, status=None,
     self._save(task)
 ```
 
-4. Four task tools go into the dispatch map.
+4. Four task tools defined with the @tool decorator.
 
 ```python
-TOOL_HANDLERS = {
-    # ...base tools...
-    "task_create": lambda **kw: TASKS.create(kw["subject"]),
-    "task_update": lambda **kw: TASKS.update(kw["task_id"], kw.get("status")),
-    "task_list":   lambda **kw: TASKS.list_all(),
-    "task_get":    lambda **kw: TASKS.get(kw["task_id"]),
-}
+@tool
+def task_create(subject: str) -> str:
+    """Create a new task."""
+    return TASKS.create(subject)
+
+@tool
+def task_update(task_id: int, status: str) -> str:
+    """Update task status."""
+    return TASKS.update(task_id, status)
+
+@tool
+def task_list() -> str:
+    """List all tasks."""
+    return TASKS.list_all()
+
+@tool
+def task_get(task_id: int) -> str:
+    """Get a specific task."""
+    return TASKS.get(task_id)
+
+tools = [task_create, task_update, task_list, task_get]
+llm = init_llm(tools)
 ```
 
 From s07 onward, the task graph is the default for multi-step work. s03's Todo remains for quick single-session checklists.

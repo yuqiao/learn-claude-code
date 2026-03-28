@@ -20,7 +20,7 @@ A language model can reason about code, but it can't *touch* the real world -- c
                     ^                |
                     |   tool_result  |
                     +----------------+
-                    (loop until stop_reason != "tool_use")
+                    (loop until no tool_calls)
 ```
 
 One exit condition controls the entire flow. The loop runs until the model stops calling tools.
@@ -30,66 +30,66 @@ One exit condition controls the entire flow. The loop runs until the model stops
 1. User prompt becomes the first message.
 
 ```python
-messages.append({"role": "user", "content": query})
+from langchain_core.messages import HumanMessage
+messages.append(HumanMessage(content=query))
 ```
 
 2. Send messages + tool definitions to the LLM.
 
 ```python
-response = client.messages.create(
-    model=MODEL, system=SYSTEM, messages=messages,
-    tools=TOOLS, max_tokens=8000,
-)
+llm_with_tools = llm.bind_tools([bash])
+response = llm_with_tools.invoke(messages)
 ```
 
-3. Append the assistant response. Check `stop_reason` -- if the model didn't call a tool, we're done.
+3. Append the assistant response. Check for tool calls -- if none, we're done.
 
 ```python
-messages.append({"role": "assistant", "content": response.content})
-if response.stop_reason != "tool_use":
+messages.append(response)
+if not response.tool_calls:
     return
 ```
 
-4. Execute each tool call, collect results, append as a user message. Loop back to step 2.
+4. Execute each tool call, collect results, append as ToolMessage. Loop back to step 2.
 
 ```python
-results = []
-for block in response.content:
-    if block.type == "tool_use":
-        output = run_bash(block.input["command"])
-        results.append({
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": output,
-        })
-messages.append({"role": "user", "content": results})
+from langchain_core.messages import ToolMessage
+for tool_call in response.tool_calls:
+    output = bash.invoke(tool_call["args"])
+    messages.append(ToolMessage(
+        content=output,
+        tool_call_id=tool_call["id"],
+    ))
 ```
 
 Assembled into one function:
 
 ```python
-def agent_loop(query):
-    messages = [{"role": "user", "content": query}]
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, ToolMessage
 
-        if response.stop_reason != "tool_use":
+@tool
+def bash(command: str) -> str:
+    """Run a shell command."""
+    # ... implementation ...
+
+llm = ChatOpenAI(model=MODEL, base_url=BASE_URL)
+llm_with_tools = llm.bind_tools([bash])
+
+def agent_loop(messages: list):
+    while True:
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
             return
 
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                output = run_bash(block.input["command"])
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": output,
-                })
-        messages.append({"role": "user", "content": results})
+        for tool_call in response.tool_calls:
+            output = bash.invoke(tool_call["args"])
+            messages.append(ToolMessage(
+                content=output,
+                tool_call_id=tool_call["id"],
+            ))
 ```
 
 That's the entire agent in under 30 lines. Everything else in this course layers on top -- without changing the loop.
@@ -98,10 +98,10 @@ That's the entire agent in under 30 lines. Everything else in this course layers
 
 | Component     | Before     | After                          |
 |---------------|------------|--------------------------------|
-| Agent loop    | (none)     | `while True` + stop_reason     |
-| Tools         | (none)     | `bash` (one tool)              |
-| Messages      | (none)     | Accumulating list              |
-| Control flow  | (none)     | `stop_reason != "tool_use"`    |
+| Agent loop    | (none)     | `while True` + `tool_calls`    |
+| Tools         | (none)     | `@tool bash` (one tool)        |
+| Messages      | (none)     | LangChain Message types        |
+| Control flow  | (none)     | `not response.tool_calls`      |
 
 ## Try It
 

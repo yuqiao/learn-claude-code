@@ -65,6 +65,8 @@ def micro_compact(messages: list) -> list:
 2. **Layer 2 -- auto_compact**: When tokens exceed threshold, save full transcript to disk, then ask the LLM to summarize.
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 def auto_compact(messages: list) -> list:
     # Save transcript for recovery
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
@@ -72,16 +74,14 @@ def auto_compact(messages: list) -> list:
         for msg in messages:
             f.write(json.dumps(msg, default=str) + "\n")
     # LLM summarizes
-    response = client.messages.create(
-        model=MODEL,
-        messages=[{"role": "user", "content":
+    response = llm.invoke([
+        HumanMessage(content=
             "Summarize this conversation for continuity..."
-            + json.dumps(messages, default=str)[:80000]}],
-        max_tokens=2000,
-    )
+            + json.dumps(messages, default=str)[:80000])
+    ])
     return [
-        {"role": "user", "content": f"[Compressed]\n\n{response.content[0].text}"},
-        {"role": "assistant", "content": "Understood. Continuing."},
+        HumanMessage(content=f"[Compressed]\n\n{response.content}"),
+        AIMessage(content="Understood. Continuing."),
     ]
 ```
 
@@ -90,12 +90,14 @@ def auto_compact(messages: list) -> list:
 4. The loop integrates all three:
 
 ```python
+from langchain_core.messages import HumanMessage
+
 def agent_loop(messages: list):
     while True:
         micro_compact(messages)                        # Layer 1
         if estimate_tokens(messages) > THRESHOLD:
             messages[:] = auto_compact(messages)       # Layer 2
-        response = client.messages.create(...)
+        response = llm.invoke(messages)
         # ... tool execution ...
         if manual_compact:
             messages[:] = auto_compact(messages)       # Layer 3

@@ -86,17 +86,17 @@ class MessageBus:
 4. 各チームメイトは各LLM呼び出しの前にインボックスを確認し、受信メッセージをコンテキストに注入する。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 def _teammate_loop(self, name, role, prompt):
-    messages = [{"role": "user", "content": prompt}]
+    messages = [HumanMessage(content=prompt)]
     for _ in range(50):
         inbox = BUS.read_inbox(name)
         if inbox != "[]":
-            messages.append({"role": "user",
-                "content": f"<inbox>{inbox}</inbox>"})
-            messages.append({"role": "assistant",
-                "content": "Noted inbox messages."})
-        response = client.messages.create(...)
-        if response.stop_reason != "tool_use":
+            messages.append(HumanMessage(content=f"<inbox>{inbox}</inbox>"))
+            messages.append(AIMessage(content="Noted inbox messages."))
+        response = llm.invoke(messages)
+        if not response.tool_calls:
             break
         # execute tools, append results...
     self._find_member(name)["status"] = "idle"

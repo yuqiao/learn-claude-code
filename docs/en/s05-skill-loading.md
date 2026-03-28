@@ -78,10 +78,12 @@ SYSTEM = f"""You are a coding agent at {WORKDIR}.
 Skills available:
 {SKILL_LOADER.get_descriptions()}"""
 
-TOOL_HANDLERS = {
-    # ...base tools...
-    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
-}
+from langchain_core.tools import tool
+
+@tool
+def load_skill(name: str) -> str:
+    """Load a skill by name."""
+    return SKILL_LOADER.get_content(name)
 ```
 
 The model learns what skills exist (cheap) and loads them when relevant (expensive).

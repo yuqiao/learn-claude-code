@@ -31,17 +31,18 @@ import threading
 import uuid
 from pathlib import Path
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 
 load_dotenv(override=True)
 
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+# LangChain automatically reads OPENAI_API_KEY and OPENAI_API_BASE from env
+MODEL = os.environ["MODEL_ID"]
 
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
-MODEL = os.environ["MODEL_ID"]
+llm = ChatOpenAI(model=MODEL)
 
 SYSTEM = f"You are a coding agent at {WORKDIR}. Use background_run for long-running commands."
 
@@ -49,27 +50,21 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use background_run for long-runn
 # -- BackgroundManager: threaded execution + notification queue --
 class BackgroundManager:
     def __init__(self):
-        self.tasks = {}  # task_id -> {status, result, command}
-        self._notification_queue = []  # completed task results
+        self.tasks = {}
+        self._notification_queue = []
         self._lock = threading.Lock()
 
     def run(self, command: str) -> str:
-        """Start a background thread, return task_id immediately."""
         task_id = str(uuid.uuid4())[:8]
         self.tasks[task_id] = {"status": "running", "result": None, "command": command}
-        thread = threading.Thread(
-            target=self._execute, args=(task_id, command), daemon=True
-        )
+        thread = threading.Thread(target=self._execute, args=(task_id, command), daemon=True)
         thread.start()
         return f"Background task {task_id} started: {command[:80]}"
 
     def _execute(self, task_id: str, command: str):
-        """Thread target: run subprocess, capture output, push to queue."""
         try:
-            r = subprocess.run(
-                command, shell=True, cwd=WORKDIR,
-                capture_output=True, text=True, timeout=300
-            )
+            r = subprocess.run(command, shell=True, cwd=WORKDIR,
+                               capture_output=True, text=True, timeout=300)
             output = (r.stdout + r.stderr).strip()[:50000]
             status = "completed"
         except subprocess.TimeoutExpired:
@@ -89,7 +84,6 @@ class BackgroundManager:
             })
 
     def check(self, task_id: str = None) -> str:
-        """Check status of one task or list all."""
         if task_id:
             t = self.tasks.get(task_id)
             if not t:
@@ -101,7 +95,6 @@ class BackgroundManager:
         return "\n".join(lines) if lines else "No background tasks."
 
     def drain_notifications(self) -> list:
-        """Return and clear all pending completion notifications."""
         with self._lock:
             notifs = list(self._notification_queue)
             self._notification_queue.clear()
@@ -118,7 +111,10 @@ def safe_path(p: str) -> Path:
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
-def run_bash(command: str) -> str:
+
+@tool
+def bash(command: str) -> str:
+    """Run a shell command (blocking)."""
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -130,7 +126,10 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
-def run_read(path: str, limit: int = None) -> str:
+
+@tool
+def read_file(path: str, limit: int = None) -> str:
+    """Read file contents."""
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -139,7 +138,10 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-def run_write(path: str, content: str) -> str:
+
+@tool
+def write_file(path: str, content: str) -> str:
+    """Write content to file."""
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +150,10 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-def run_edit(path: str, old_text: str, new_text: str) -> str:
+
+@tool
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace exact text in file."""
     try:
         fp = safe_path(path)
         c = fp.read_text()
@@ -160,63 +165,50 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         return f"Error: {e}"
 
 
-TOOL_HANDLERS = {
-    "bash":             lambda **kw: run_bash(kw["command"]),
-    "read_file":        lambda **kw: run_read(kw["path"], kw.get("limit")),
-    "write_file":       lambda **kw: run_write(kw["path"], kw["content"]),
-    "edit_file":        lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
-    "background_run":   lambda **kw: BG.run(kw["command"]),
-    "check_background": lambda **kw: BG.check(kw.get("task_id")),
-}
+@tool
+def background_run(command: str) -> str:
+    """Run command in background thread. Returns task_id immediately."""
+    return BG.run(command)
 
-TOOLS = [
-    {"name": "bash", "description": "Run a shell command (blocking).",
-     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
-    {"name": "write_file", "description": "Write content to file.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in file.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
-    {"name": "background_run", "description": "Run command in background thread. Returns task_id immediately.",
-     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
-    {"name": "check_background", "description": "Check background task status. Omit task_id to list all.",
-     "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
-]
+
+@tool
+def check_background(task_id: str = None) -> str:
+    """Check background task status. Omit task_id to list all."""
+    return BG.check(task_id)
+
+
+TOOLS = [bash, read_file, write_file, edit_file, background_run, check_background]
+TOOL_DISPATCH = {t.name: t for t in TOOLS}
 
 
 def agent_loop(messages: list):
+    llm_with_tools = llm.bind_tools(TOOLS)
     while True:
         # Drain background notifications and inject as system message before LLM call
         notifs = BG.drain_notifications()
         if notifs and messages:
-            notif_text = "\n".join(
-                f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs
-            )
-            messages.append({"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>"})
-            messages.append({"role": "assistant", "content": "Noted background results."})
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
-        if response.stop_reason != "tool_use":
+            notif_text = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
+            messages.append(HumanMessage(content=f"<background-results>\n{notif_text}\n</background-results>"))
+            messages.append(AIMessage(content="Noted background results."))
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+        if not response.tool_calls:
             return
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                handler = TOOL_HANDLERS.get(block.name)
-                try:
-                    output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
-                except Exception as e:
-                    output = f"Error: {e}"
-                print(f"> {block.name}: {str(output)[:200]}")
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
-        messages.append({"role": "user", "content": results})
+        for tool_call in response.tool_calls:
+            handler = TOOL_DISPATCH.get(tool_call["name"])
+            try:
+                output = handler.invoke(tool_call["args"]) if handler else f"Unknown tool: {tool_call['name']}"
+            except Exception as e:
+                output = f"Error: {e}"
+            print(f"> {tool_call['name']}: {str(output)[:200]}")
+            messages.append(ToolMessage(
+                content=str(output),
+                tool_call_id=tool_call["id"],
+            ))
 
 
 if __name__ == "__main__":
-    history = []
+    history = [SystemMessage(content=SYSTEM)]
     while True:
         try:
             query = input("\033[36ms08 >> \033[0m")
@@ -224,11 +216,9 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append({"role": "user", "content": query})
+        history.append(HumanMessage(content=query))
         agent_loop(history)
-        response_content = history[-1]["content"]
-        if isinstance(response_content, list):
-            for block in response_content:
-                if hasattr(block, "text"):
-                    print(block.text)
+        last_msg = history[-1]
+        if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
+            print(last_msg.content)
         print()

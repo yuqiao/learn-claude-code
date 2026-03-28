@@ -50,13 +50,15 @@ Identity re-injection after compression:
 1. チームメイトのループはWORKとIDLEの2フェーズ。LLMがツール呼び出しを止めた時(または`idle`ツールを呼んだ時)、IDLEフェーズに入る。
 
 ```python
+from langchain_core.messages import HumanMessage
+
 def _loop(self, name, role, prompt):
     while True:
         # -- WORK PHASE --
-        messages = [{"role": "user", "content": prompt}]
+        messages = [HumanMessage(content=prompt)]
         for _ in range(50):
-            response = client.messages.create(...)
-            if response.stop_reason != "tool_use":
+            response = llm.invoke(messages)
+            if not response.tool_calls:
                 break
             # execute tools...
             if idle_requested:
@@ -74,20 +76,21 @@ def _loop(self, name, role, prompt):
 2. IDLEフェーズがインボックスとタスクボードをポーリングする。
 
 ```python
+from langchain_core.messages import HumanMessage
+
 def _idle_poll(self, name, messages):
     for _ in range(IDLE_TIMEOUT // POLL_INTERVAL):  # 60s / 5s = 12
         time.sleep(POLL_INTERVAL)
         inbox = BUS.read_inbox(name)
         if inbox:
-            messages.append({"role": "user",
-                "content": f"<inbox>{inbox}</inbox>"})
+            messages.append(HumanMessage(content=f"<inbox>{inbox}</inbox>"))
             return True
         unclaimed = scan_unclaimed_tasks()
         if unclaimed:
             claim_task(unclaimed[0]["id"], name)
-            messages.append({"role": "user",
-                "content": f"<auto-claimed>Task #{unclaimed[0]['id']}: "
-                           f"{unclaimed[0]['subject']}</auto-claimed>"})
+            messages.append(HumanMessage(
+                content=f"<auto-claimed>Task #{unclaimed[0]['id']}: "
+                       f"{unclaimed[0]['subject']}</auto-claimed>"))
             return True
     return False  # timeout -> shutdown
 ```
@@ -109,12 +112,13 @@ def scan_unclaimed_tasks() -> list:
 4. アイデンティティ再注入: コンテキストが短すぎる(圧縮が起きた)場合にアイデンティティブロックを挿入する。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage
+
 if len(messages) <= 3:
-    messages.insert(0, {"role": "user",
-        "content": f"<identity>You are '{name}', role: {role}, "
-                   f"team: {team_name}. Continue your work.</identity>"})
-    messages.insert(1, {"role": "assistant",
-        "content": f"I am {name}. Continuing."})
+    messages.insert(0, HumanMessage(
+        content=f"<identity>You are '{name}', role: {role}, "
+               f"team: {team_name}. Continue your work.</identity>"))
+    messages.insert(1, AIMessage(content=f"I am {name}. Continuing."))
 ```
 
 ## s10からの変更点

@@ -78,12 +78,11 @@ def agent_loop(messages: list):
         if notifs:
             notif_text = "\n".join(
                 f"[bg:{n['task_id']}] {n['result']}" for n in notifs)
-            messages.append({"role": "user",
-                "content": f"<background-results>\n{notif_text}\n"
-                           f"</background-results>"})
-            messages.append({"role": "assistant",
-                "content": "Noted background results."})
-        response = client.messages.create(...)
+            messages.append(HumanMessage(
+                content=f"<background-results>\n{notif_text}\n"
+                       f"</background-results>"))
+            messages.append(AIMessage(content="Noted background results."))
+        response = llm.invoke(messages)
 ```
 
 循环保持单线程。只有子进程 I/O 被并行化。

@@ -55,10 +55,12 @@ class TodoManager:
 2. The `todo` tool goes into the dispatch map like any other tool.
 
 ```python
-TOOL_HANDLERS = {
-    # ...base tools...
-    "todo": lambda **kw: TODO.update(kw["items"]),
-}
+from langchain_core.tools import tool
+
+@tool
+def todo(items: list) -> str:
+    """Update the todo list."""
+    return TODO.update(items)
 ```
 
 3. A nag reminder injects a nudge if the model goes 3+ rounds without calling `todo`.

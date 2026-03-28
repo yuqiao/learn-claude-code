@@ -20,7 +20,7 @@
                     ^                |
                     |   tool_result  |
                     +----------------+
-                    (loop until stop_reason != "tool_use")
+                    (loop until no tool_calls)
 ```
 
 1つの終了条件がフロー全体を制御する。モデルがツール呼び出しを止めるまでループが回り続ける。
@@ -30,66 +30,66 @@
 1. ユーザーのプロンプトが最初のメッセージになる。
 
 ```python
-messages.append({"role": "user", "content": query})
+from langchain_core.messages import HumanMessage
+messages.append(HumanMessage(content=query))
 ```
 
 2. メッセージとツール定義をLLMに送信する。
 
 ```python
-response = client.messages.create(
-    model=MODEL, system=SYSTEM, messages=messages,
-    tools=TOOLS, max_tokens=8000,
-)
+llm_with_tools = llm.bind_tools([bash])
+response = llm_with_tools.invoke(messages)
 ```
 
-3. アシスタントのレスポンスを追加し、`stop_reason`を確認する。ツールが呼ばれなければ終了。
+3. アシスタントのレスポンスを追加し、ツール呼び出しを確認する。呼び出しがなければ終了。
 
 ```python
-messages.append({"role": "assistant", "content": response.content})
-if response.stop_reason != "tool_use":
+messages.append(response)
+if not response.tool_calls:
     return
 ```
 
-4. 各ツール呼び出しを実行し、結果を収集してuserメッセージとして追加。ステップ2に戻る。
+4. 各ツール呼び出しを実行し、結果を収集してToolMessageとして追加。ステップ2に戻る。
 
 ```python
-results = []
-for block in response.content:
-    if block.type == "tool_use":
-        output = run_bash(block.input["command"])
-        results.append({
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": output,
-        })
-messages.append({"role": "user", "content": results})
+from langchain_core.messages import ToolMessage
+for tool_call in response.tool_calls:
+    output = bash.invoke(tool_call["args"])
+    messages.append(ToolMessage(
+        content=output,
+        tool_call_id=tool_call["id"],
+    ))
 ```
 
 1つの関数にまとめると:
 
 ```python
-def agent_loop(query):
-    messages = [{"role": "user", "content": query}]
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
-        )
-        messages.append({"role": "assistant", "content": response.content})
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, ToolMessage
 
-        if response.stop_reason != "tool_use":
+@tool
+def bash(command: str) -> str:
+    """Run a shell command."""
+    # ... implementation ...
+
+llm = ChatOpenAI(model=MODEL, base_url=BASE_URL)
+llm_with_tools = llm.bind_tools([bash])
+
+def agent_loop(messages: list):
+    while True:
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
             return
 
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                output = run_bash(block.input["command"])
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": output,
-                })
-        messages.append({"role": "user", "content": results})
+        for tool_call in response.tool_calls:
+            output = bash.invoke(tool_call["args"])
+            messages.append(ToolMessage(
+                content=output,
+                tool_call_id=tool_call["id"],
+            ))
 ```
 
 これでエージェント全体が30行未満に収まる。本コースの残りはすべてこのループの上に積み重なる -- ループ自体は変わらない。
@@ -98,10 +98,10 @@ def agent_loop(query):
 
 | Component     | Before     | After                          |
 |---------------|------------|--------------------------------|
-| Agent loop    | (none)     | `while True` + stop_reason     |
-| Tools         | (none)     | `bash` (one tool)              |
-| Messages      | (none)     | Accumulating list              |
-| Control flow  | (none)     | `stop_reason != "tool_use"`    |
+| Agent loop    | (none)     | `while True` + `tool_calls`    |
+| Tools         | (none)     | `@tool bash` (one tool)        |
+| Messages      | (none)     | LangChain Message types        |
+| Control flow  | (none)     | `not response.tool_calls`      |
 
 ## 試してみる
 

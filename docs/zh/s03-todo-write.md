@@ -52,13 +52,15 @@ class TodoManager:
         return self.render()
 ```
 
-2. `todo` 工具和其他工具一样加入 dispatch map。
+2. 使用 `@tool` 装饰器定义 `todo` 工具。
 
 ```python
-TOOL_HANDLERS = {
-    # ...base tools...
-    "todo": lambda **kw: TODO.update(kw["items"]),
-}
+from langchain_core.tools import tool
+
+@tool
+def todo(items: list) -> str:
+    """Update the todo list with task statuses."""
+    return TODO.update(items)
 ```
 
 3. nag reminder: 模型连续 3 轮以上不调用 `todo` 时注入提醒。
@@ -66,8 +68,8 @@ TOOL_HANDLERS = {
 ```python
 if rounds_since_todo >= 3 and messages:
     last = messages[-1]
-    if last["role"] == "user" and isinstance(last.get("content"), list):
-        last["content"].insert(0, {
+    if isinstance(last, HumanMessage) and isinstance(last.content, list):
+        last.content.insert(0, {
             "type": "text",
             "text": "<reminder>Update your todos.</reminder>",
         })

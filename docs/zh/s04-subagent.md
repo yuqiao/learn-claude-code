@@ -31,44 +31,38 @@ Parent context stays clean. Subagent context is discarded.
 1. 父智能体有一个 `task` 工具。子智能体拥有除 `task` 外的所有基础工具 (禁止递归生成)。
 
 ```python
-PARENT_TOOLS = CHILD_TOOLS + [
-    {"name": "task",
-     "description": "Spawn a subagent with fresh context.",
-     "input_schema": {
-         "type": "object",
-         "properties": {"prompt": {"type": "string"}},
-         "required": ["prompt"],
-     }},
-]
+from langchain_core.tools import tool
+
+@tool
+def task(prompt: str) -> str:
+    """Spawn a subagent with fresh context."""
+    return run_subagent(prompt)
+
+PARENT_TOOLS = CHILD_TOOLS + [task]
 ```
 
-2. 子智能体以 `messages=[]` 启动, 运行自己的循环。只有最终文本返回给父智能体。
+2. 子智能体以空消息列表启动, 运行自己的循环。只有最终文本返回给父智能体。
 
 ```python
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
 def run_subagent(prompt: str) -> str:
-    sub_messages = [{"role": "user", "content": prompt}]
+    sub_messages = [HumanMessage(content=prompt)]
     for _ in range(30):  # safety limit
-        response = client.messages.create(
-            model=MODEL, system=SUBAGENT_SYSTEM,
-            messages=sub_messages,
-            tools=CHILD_TOOLS, max_tokens=8000,
-        )
-        sub_messages.append({"role": "assistant",
-                             "content": response.content})
-        if response.stop_reason != "tool_use":
+        response = llm.invoke(sub_messages, tools=CHILD_TOOLS)
+        sub_messages.append(response)
+        if not response.tool_calls:
             break
         results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                handler = TOOL_HANDLERS.get(block.name)
-                output = handler(**block.input)
-                results.append({"type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": str(output)[:50000]})
-        sub_messages.append({"role": "user", "content": results})
-    return "".join(
-        b.text for b in response.content if hasattr(b, "text")
-    ) or "(no summary)"
+        for tool_call in response.tool_calls:
+            handler = TOOL_HANDLERS.get(tool_call["name"])
+            output = handler(**tool_call["args"])
+            results.append(ToolMessage(
+                content=str(output)[:50000],
+                tool_call_id=tool_call["id"],
+            ))
+        sub_messages.extend(results)
+    return response.content or "(no summary)"
 ```
 
 子智能体可能跑了 30+ 次工具调用, 但整个消息历史直接丢弃。父智能体收到的只是一段摘要文本, 作为普通 `tool_result` 返回。

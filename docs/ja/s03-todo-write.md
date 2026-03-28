@@ -55,19 +55,23 @@ class TodoManager:
 2. `todo`ツールは他のツールと同様にディスパッチマップに追加される。
 
 ```python
-TOOL_HANDLERS = {
-    # ...base tools...
-    "todo": lambda **kw: TODO.update(kw["items"]),
-}
+from langchain_core.tools import tool
+
+@tool
+def todo(items: list) -> str:
+    """Update the todo list with task statuses."""
+    return TODO.update(items)
 ```
 
 3. nagリマインダーが、モデルが3ラウンド以上`todo`を呼ばなかった場合にナッジを注入する。
 
 ```python
+from langchain_core.messages import HumanMessage
+
 if rounds_since_todo >= 3 and messages:
     last = messages[-1]
-    if last["role"] == "user" and isinstance(last.get("content"), list):
-        last["content"].insert(0, {
+    if isinstance(last, HumanMessage) and isinstance(last.content, list):
+        last.content.insert(0, {
             "type": "text",
             "text": "<reminder>Update your todos.</reminder>",
         })

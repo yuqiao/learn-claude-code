@@ -71,17 +71,19 @@ class SkillLoader:
         return f"<skill name=\"{name}\">\n{skill['body']}\n</skill>"
 ```
 
-3. 第一层写入系统提示。第二层不过是 dispatch map 中的又一个工具。
+3. 使用 `@tool` 装饰器定义工具, 第一层写入系统提示。
 
 ```python
+from langchain_core.tools import tool
+
+@tool
+def load_skill(name: str) -> str:
+    """Load a skill by name."""
+    return SKILL_LOADER.get_content(name)
+
 SYSTEM = f"""You are a coding agent at {WORKDIR}.
 Skills available:
 {SKILL_LOADER.get_descriptions()}"""
-
-TOOL_HANDLERS = {
-    # ...base tools...
-    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
-}
 ```
 
 模型知道有哪些技能 (便宜), 需要时再加载完整内容 (贵)。

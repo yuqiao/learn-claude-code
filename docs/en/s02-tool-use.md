@@ -48,41 +48,56 @@ def run_read(path: str, limit: int = None) -> str:
     return "\n".join(lines)[:50000]
 ```
 
-2. The dispatch map links tool names to handlers.
+2. LangChain uses `@tool` decorator to define tools, auto-generating schema.
 
 ```python
-TOOL_HANDLERS = {
-    "bash":       lambda **kw: run_bash(kw["command"]),
-    "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
-    "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
-    "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"],
-                                        kw["new_text"]),
-}
+from langchain_core.tools import tool
+
+@tool
+def bash(command: str) -> str:
+    """Run a shell command."""
+    return run_bash(command)
+
+@tool
+def read_file(path: str, limit: int = None) -> str:
+    """Read file contents."""
+    return run_read(path, limit)
+
+@tool
+def write_file(path: str, content: str) -> str:
+    """Write content to file."""
+    return run_write(path, content)
+
+@tool
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    """Replace exact text in file."""
+    return run_edit(path, old_text, new_text)
+
+TOOLS = [bash, read_file, write_file, edit_file]
+TOOL_DISPATCH = {t.name: t for t in TOOLS}
 ```
 
 3. In the loop, look up the handler by name. The loop body itself is unchanged from s01.
 
 ```python
-for block in response.content:
-    if block.type == "tool_use":
-        handler = TOOL_HANDLERS.get(block.name)
-        output = handler(**block.input) if handler \
-            else f"Unknown tool: {block.name}"
-        results.append({
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": output,
-        })
+for tool_call in response.tool_calls:
+    handler = TOOL_DISPATCH.get(tool_call["name"])
+    output = handler.invoke(tool_call["args"]) if handler \
+        else f"Unknown tool: {tool_call['name']}"
+    messages.append(ToolMessage(
+        content=output,
+        tool_call_id=tool_call["id"],
+    ))
 ```
 
-Add a tool = add a handler + add a schema entry. The loop never changes.
+Add a tool = add an `@tool` function. The loop never changes.
 
 ## What Changed From s01
 
 | Component      | Before (s01)       | After (s02)                |
 |----------------|--------------------|----------------------------|
 | Tools          | 1 (bash only)      | 4 (bash, read, write, edit)|
-| Dispatch       | Hardcoded bash call | `TOOL_HANDLERS` dict       |
+| Dispatch       | Hardcoded bash call | `TOOL_DISPATCH` dict       |
 | Path safety    | None               | `safe_path()` sandbox      |
 | Agent loop     | Unchanged          | Unchanged                  |
 

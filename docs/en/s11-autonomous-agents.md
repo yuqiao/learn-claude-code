@@ -24,11 +24,11 @@ Teammate lifecycle with idle cycle:
 +---+---+
     |
     v
-+-------+   tool_use     +-------+
++-------+   tool_calls    +-------+
 | WORK  | <------------- |  LLM  |
 +---+---+                +-------+
     |
-    | stop_reason != tool_use (or idle tool called)
+    | not response.tool_calls (or idle tool called)
     v
 +--------+
 |  IDLE  |  poll every 5s for up to 60s
@@ -53,12 +53,12 @@ Identity re-injection after compression:
 def _loop(self, name, role, prompt):
     while True:
         # -- WORK PHASE --
-        messages = [{"role": "user", "content": prompt}]
+        messages = [HumanMessage(content=prompt)]
         for _ in range(50):
-            response = client.messages.create(...)
-            if response.stop_reason != "tool_use":
+            response = llm.invoke(messages)
+            if not response.tool_calls:
                 break
-            # execute tools...
+            # execute tools, append ToolMessage...
             if idle_requested:
                 break
 
@@ -79,15 +79,15 @@ def _idle_poll(self, name, messages):
         time.sleep(POLL_INTERVAL)
         inbox = BUS.read_inbox(name)
         if inbox:
-            messages.append({"role": "user",
-                "content": f"<inbox>{inbox}</inbox>"})
+            messages.append(HumanMessage(
+                content=f"<inbox>{inbox}</inbox>"))
             return True
         unclaimed = scan_unclaimed_tasks()
         if unclaimed:
             claim_task(unclaimed[0]["id"], name)
-            messages.append({"role": "user",
-                "content": f"<auto-claimed>Task #{unclaimed[0]['id']}: "
-                           f"{unclaimed[0]['subject']}</auto-claimed>"})
+            messages.append(HumanMessage(
+                content=f"<auto-claimed>Task #{unclaimed[0]['id']}: "
+                       f"{unclaimed[0]['subject']}</auto-claimed>"))
             return True
     return False  # timeout -> shutdown
 ```
@@ -110,11 +110,11 @@ def scan_unclaimed_tasks() -> list:
 
 ```python
 if len(messages) <= 3:
-    messages.insert(0, {"role": "user",
-        "content": f"<identity>You are '{name}', role: {role}, "
-                   f"team: {team_name}. Continue your work.</identity>"})
-    messages.insert(1, {"role": "assistant",
-        "content": f"I am {name}. Continuing."})
+    messages.insert(0, HumanMessage(
+        content=f"<identity>You are '{name}', role: {role}, "
+               f"team: {team_name}. Continue your work.</identity>"))
+    messages.insert(1, AIMessage(
+        content=f"I am {name}. Continuing."))
 ```
 
 ## What Changed From s10

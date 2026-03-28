@@ -74,14 +74,16 @@ class SkillLoader:
 3. 第1層はシステムプロンプトに配置。第2層は通常のツールハンドラ。
 
 ```python
+from langchain_core.tools import tool
+
 SYSTEM = f"""You are a coding agent at {WORKDIR}.
 Skills available:
 {SKILL_LOADER.get_descriptions()}"""
 
-TOOL_HANDLERS = {
-    # ...base tools...
-    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
-}
+@tool
+def load_skill(name: str) -> str:
+    """Load a skill's full instructions."""
+    return SKILL_LOADER.get_content(name)
 ```
 
 モデルはどのスキルが存在するかを知り(低コスト)、関連する時にだけ読み込む(高コスト)。

@@ -47,7 +47,9 @@ Trackers:
 ```python
 shutdown_requests = {}
 
-def handle_shutdown_request(teammate: str) -> str:
+@tool
+def shutdown_request(teammate: str) -> str:
+    """Request a teammate to shut down gracefully."""
     req_id = str(uuid.uuid4())[:8]
     shutdown_requests[req_id] = {"target": teammate, "status": "pending"}
     BUS.send("lead", teammate, "Please shut down gracefully.",
@@ -58,13 +60,14 @@ def handle_shutdown_request(teammate: str) -> str:
 2. The teammate receives the request and responds with approve/reject.
 
 ```python
-if tool_name == "shutdown_response":
-    req_id = args["request_id"]
-    approve = args["approve"]
-    shutdown_requests[req_id]["status"] = "approved" if approve else "rejected"
-    BUS.send(sender, "lead", args.get("reason", ""),
+@tool
+def shutdown_response(request_id: str, approve: bool, reason: str = "") -> str:
+    """Respond to a shutdown request."""
+    shutdown_requests[request_id]["status"] = "approved" if approve else "rejected"
+    BUS.send(sender, "lead", reason,
              "shutdown_response",
-             {"request_id": req_id, "approve": approve})
+             {"request_id": request_id, "approve": approve})
+    return f"Shutdown response sent for {request_id}"
 ```
 
 3. Plan approval follows the identical pattern. The teammate submits a plan (generating a request_id), the lead reviews (referencing the same request_id).
@@ -72,12 +75,15 @@ if tool_name == "shutdown_response":
 ```python
 plan_requests = {}
 
-def handle_plan_review(request_id, approve, feedback=""):
+@tool
+def plan_review(request_id: str, approve: bool, feedback: str = "") -> str:
+    """Review and respond to a plan request."""
     req = plan_requests[request_id]
     req["status"] = "approved" if approve else "rejected"
     BUS.send("lead", req["from"], feedback,
              "plan_approval_response",
              {"request_id": request_id, "approve": approve})
+    return f"Plan review sent for {request_id}"
 ```
 
 One FSM, two applications. The same `pending -> approved | rejected` state machine handles any request-response protocol.
