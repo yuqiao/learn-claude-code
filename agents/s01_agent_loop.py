@@ -29,14 +29,18 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import subprocess
+import sys
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+# 添加 agents 目录到 path，支持从项目根目录运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verbose_callback import VerboseCallbackHandler
 
 # 解析命令行参数
 parser = argparse.ArgumentParser(description="Agent Loop with optional verbose logging")
@@ -57,89 +61,8 @@ SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act
 COLOR = {
     "reset": "\033[0m",
     "gray": "\033[90m",
-    "blue": "\033[34m",
-    "green": "\033[32m",
     "yellow": "\033[33m",
-    "cyan": "\033[36m",
-    "magenta": "\033[35m",
 }
-
-
-def highlight_json(text: str) -> str:
-    """简单的 JSON 语法高亮"""
-    result = []
-    i = 0
-    in_string = False
-    string_char = None
-
-    while i < len(text):
-        char = text[i]
-
-        # 处理字符串
-        if char in '"\'':
-            if not in_string:
-                in_string = True
-                string_char = char
-                result.append(f"{COLOR['green']}{char}")
-            elif char == string_char and (i == 0 or text[i-1] != '\\'):
-                in_string = False
-                string_char = None
-                result.append(f"{char}{COLOR['reset']}")
-            else:
-                result.append(char)
-            i += 1
-            continue
-
-        if in_string:
-            result.append(char)
-            i += 1
-            continue
-
-        # 处理关键字
-        if char.isdigit() or (char == '-' and i + 1 < len(text) and text[i + 1].isdigit()):
-            j = i
-            while j < len(text) and (text[j].isdigit() or text[j] in '.-eE+'):
-                j += 1
-            result.append(f"{COLOR['magenta']}{text[i:j]}{COLOR['reset']}")
-            i = j
-            continue
-
-        if text[i:i+4] in ('true', 'null'):
-            result.append(f"{COLOR['cyan']}{text[i:i+4]}{COLOR['reset']}")
-            i += 4
-            continue
-
-        if text[i:i+5] == 'false':
-            result.append(f"{COLOR['cyan']}{text[i:i+5]}{COLOR['reset']}")
-            i += 5
-            continue
-
-        # 处理标点
-        if char in '{}[]':
-            result.append(f"{COLOR['yellow']}{char}{COLOR['reset']}")
-        elif char == ':':
-            result.append(f"{COLOR['blue']}{char}{COLOR['reset']}")
-        elif char == ',':
-            result.append(f"{COLOR['gray']}{char}{COLOR['reset']}")
-        else:
-            result.append(char)
-        i += 1
-
-    return ''.join(result)
-
-
-def print_json(data: dict, truncate_content: int = 500):
-    """打印带语法高亮的 JSON"""
-    # 截断过长的 content
-    if "content" in data and isinstance(data["content"], str) and len(data["content"]) > truncate_content:
-        data = {**data, "content": data["content"][:truncate_content] + "...(truncated)"}
-    json_str = json.dumps(data, ensure_ascii=False, indent=2)
-    print(highlight_json(json_str))
-
-
-def print_separator(char: str = "─", length: int = 60):
-    """打印分割线"""
-    print(f"{COLOR['gray']}{char * length}{COLOR['reset']}")
 
 
 @tool
@@ -158,61 +81,27 @@ def bash(command: str) -> str:
 
 
 # -- The core pattern: a while loop that calls tools until the model stops --
-def agent_loop(messages: list):
+def agent_loop(messages: list, verbose_handler: VerboseCallbackHandler | None = None):
+    """Agent 循环：执行工具直到模型停止调用工具"""
     llm_with_tools = llm.bind_tools([bash])
-    loop_count = 0
+    config = {"callbacks": [verbose_handler]} if verbose_handler else None
 
     while True:
-        loop_count += 1
-
-        # 打印分割线和 loop 计数
-        if VERBOSE:
-            print()
-            print_separator()
-            print(f"{COLOR['blue']}[LOOP {loop_count}]{COLOR['reset']}")
-            print_separator()
-
-        # 打印入参
-        if VERBOSE:
-            print(f"\n{COLOR['blue']}>>> REQUEST{COLOR['reset']}")
-            for msg in messages:
-                msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else {"type": type(msg).__name__}
-                print_json(msg_dict)
-
-        response = llm_with_tools.invoke(messages)
-
-        # 打印出参
-        if VERBOSE:
-            print(f"\n{COLOR['green']}<<< RESPONSE{COLOR['reset']}")
-            resp_dict = response.model_dump() if hasattr(response, "model_dump") else {"content": str(response)}
-            print_json(resp_dict)
-
+        response = llm_with_tools.invoke(messages, config=config)
         messages.append(response)
 
-        # If the model didn't call a tool, we're done
+        # 如果模型没有调用工具，结束循环
         if not response.tool_calls:
-            if VERBOSE:
-                print(f"\n{COLOR['gray']}[No tool calls, exiting loop]{COLOR['reset']}")
             return
 
-        # Execute each tool call, collect results
+        # 执行每个工具调用，收集结果
         for tool_call in response.tool_calls:
-            # 打印 tool 调用
-            if VERBOSE:
-                print(f"\n{COLOR['yellow']}>>> TOOL CALL: {tool_call['name']}{COLOR['reset']}")
-                print_json(tool_call)
-
             # 执行命令
-            print(f"\033[33m$ {tool_call['args']['command']}\033[0m")
+            print(f"{COLOR['yellow']}$ {tool_call['args']['command']}{COLOR['reset']}")
             output = bash.invoke(tool_call["args"])
 
-            # 打印 tool 结果
-            if VERBOSE:
-                print(f"\n{COLOR['yellow']}<<< TOOL RESULT{COLOR['reset']}")
-                # 截断输出
-                display_output = output[:1000] if len(output) > 1000 else output
-                print(f"{COLOR['gray']}{display_output}{COLOR['reset']}")
-            else:
+            # 非 verbose 模式下打印截断输出
+            if not verbose_handler:
                 print(output[:200])
 
             messages.append(ToolMessage(
@@ -222,6 +111,9 @@ def agent_loop(messages: list):
 
 
 if __name__ == "__main__":
+    # 创建 verbose handler（如果启用）
+    verbose_handler = VerboseCallbackHandler() if VERBOSE else None
+
     history = [SystemMessage(content=SYSTEM)]
     while True:
         try:
@@ -231,7 +123,7 @@ if __name__ == "__main__":
         if query.strip().lower() in ("q", "exit", ""):
             break
         history.append(HumanMessage(content=query))
-        agent_loop(history)
+        agent_loop(history, verbose_handler)
         # Print the final response
         last_msg = history[-1]
         if hasattr(last_msg, "content") and isinstance(last_msg.content, str):
